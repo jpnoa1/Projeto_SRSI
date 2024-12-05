@@ -4,6 +4,7 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 import os
 import socket
+from cryptography import x509
 
 class Gateway:
     def __init__(self):
@@ -15,17 +16,23 @@ class Gateway:
 
 def generate_keys(self):
         print("[INFO] A gerar chaves RSA")
+        input_password = input("Enter the password to protect the private key: ")
         self.private_key = rsa.generate_private_key(
             public_exponent=65537,
             key_size=2048,
         )
         self.public_key = self.private_key.public_key()
         # Chave secreta aleatória
-        self.secret_key = os.urandom(32)  
+        #stantby self.secret_key = os.urandom(32)  
         #encriptacao da chave privada
-        encrypted_private_key = self.encrypt_private_key(self.private_key, self.secret_key)
+        
+        with open("keys/gateway_key.pem", "wb") as f:
+            f.write(key.private_bytes(encoding=serialization.Encoding.PEM,
+                                  format=serialization.PrivateFormat.TraditionalOpenSSL,
+                                  encryption_algorithm=serialization.BestAvailableEncryption(input_password.encode('ascii')),))
+
         print("[INFO] RSA keys generated and private key encrypted.")
-        return encrypted_private_key
+        
 
 
 
