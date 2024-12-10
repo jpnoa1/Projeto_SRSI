@@ -4,6 +4,7 @@ from cryptography.x509.oid import NameOID
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import rsa
 import socket
+import json
 
 class Entity:
     def __init__(self):
@@ -120,11 +121,26 @@ class Entity:
         
         # Receive the signed certificate and the CA certificate
         data = self.socket.recv(4096)
-        signed_cert_pem, ca_cert_pem = data.split(b'\n', 1)
-        signed_cert = x509.load_pem_x509_certificate(signed_cert_pem)
-        ca_certificate = x509.load_pem_x509_certificate(ca_cert_pem)
-        print("[INFO] Signed certificate received from CA.")
-        return signed_cert, ca_certificate
+        try:
+            response = json.loads(data.decode('utf-8'))
+            signed_cert_pem = response['signed_cert_pem'].encode('utf-8')
+            ca_cert_pem = response['ca_cert_pem'].encode('utf-8')
+            
+            print(signed_cert_pem.decode('utf-8'))
+            print("\n")
+            print(ca_cert_pem.decode('utf-8'))
+            
+            signed_cert = x509.load_pem_x509_certificate(signed_cert_pem)
+            ca_certificate = x509.load_pem_x509_certificate(ca_cert_pem)
+            print("[INFO] Signed certificate and CA certificate received from CA.")
+            return signed_cert, ca_certificate            
+        except json.JSONDecodeError as e:
+            print(f"[ERROR] JSON decode error: {e}")
+        except KeyError as e:
+            print(f"[ERROR] Missing key in response: {e}")
+        except ValueError as e:
+            print(f"[ERROR] Invalid certificate format: {e}")
+        return None, None
     
     def menu(self):
         print("1. Request certificates")

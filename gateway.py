@@ -4,6 +4,7 @@ import socket
 from cryptography import x509
 from cryptography.x509.oid import NameOID
 from datetime import datetime, timezone, timedelta
+import json
 
 class Gateway:
     def __init__(self, HOST, PORT):
@@ -35,7 +36,7 @@ class Gateway:
         return True
     
     def read_crt(self):
-        with open("keys/gateway_key.pem", "rb") as f:
+        with open("root_certs/root_certificate.pem", "rb") as f:
             cert = f.read()
         return cert
     
@@ -107,7 +108,7 @@ class Gateway:
         # write certificate to disk
         print("[INFO] Self Signed Certificate created now storing it")
         
-        with open("root_certificate.pem", "wb") as f:
+        with open("root_certs/root_certificate.pem", "wb") as f:
             f.write(certificate.public_bytes(serialization.Encoding.PEM))
         print("[INFO] Self Signed Certificate stored")
         
@@ -178,10 +179,10 @@ class Gateway:
         ).serial_number(
             x509.random_serial_number()
         ).not_valid_before(
-            datetime.datetime.utcnow()
+             datetime.now(timezone.utc)
         ).not_valid_after(
-            # 1 year in duration
-            datetime.datetime.utcnow() + datetime.timedelta(days=365)
+            # 10 years in duration
+           datetime.now(timezone.utc) + timedelta(days=3650)
         ).add_extension(
             x509.KeyUsage(digital_signature=True, key_encipherment=True, key_cert_sign=False, crl_sign=False,
                         content_commitment=False, data_encipherment=True, key_agreement=True, encipher_only=False,
@@ -192,9 +193,9 @@ class Gateway:
         print("[INFO] Certificate created and signed")
         
         print("[INFO] Storing the certificate")
-        with open("user.crt", "ab") as f:
+        with open("root_certs/user_cert.pem", "wb") as f:
             f.write(user_cert.public_bytes(serialization.Encoding.PEM))
-            f.write("\n\n")
+            # f.write("\n\n")
         print("[INFO] Certificate stored")
         
         return user_cert
@@ -235,12 +236,14 @@ def main():
                 print(f"Conexão recebida de {client_address}")
                                 
                 csr = client_socket.recv(4096)
-                cert = gateway.read_crt()
-                signed_cert_pem = gateway.load_csr_and_issue_certificate(csr, cert, privkey).public_bytes(serialization.Encoding.PEM)
-                ca_cert_pem = cert.public_bytes(serialization.Encoding.PEM)
-                response = signed_cert_pem + b'\n' + ca_cert_pem
-                client_socket.send(response)
-                
+                ca_cert_pem = gateway.read_crt().decode('utf-8')
+                signed_cert_pem = gateway.load_csr_and_issue_certificate(csr, gateway.read_crt(), privkey).public_bytes(serialization.Encoding.PEM).decode('utf-8')    
+                response = json.dumps({
+                    'signed_cert_pem': signed_cert_pem,
+                    'ca_cert_pem': ca_cert_pem
+                })
+                client_socket.send(response.encode('utf-8'))
+                print("Certificado enviado para o cliente  ")
                 client_socket.close()
             except socket.timeout:
                 # Continuar o loop quando o timeout ocorre
