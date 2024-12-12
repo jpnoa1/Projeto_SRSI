@@ -153,7 +153,7 @@ class Entity:
             cert = f.read()
         return cert
     
-    def authenticate_with_contact(self, contact_socket):
+    def authenticate_with_contact_sender(self, contact_socket):
         # Send the signed certificate to the contact
         contact_socket.send(self.signed_certificate.public_bytes(serialization.Encoding.PEM))
         
@@ -180,6 +180,31 @@ class Entity:
         
         return True
     
+    def authenticate_with_contact_receiver(self, contact_socket, contact_signed_cert_pem):
+        # Send the signed certificate to the contact
+        contact_socket.send(self.signed_certificate.public_bytes(serialization.Encoding.PEM))
+        
+        self.contact_signed_cert = x509.load_pem_x509_certificate(contact_signed_cert_pem)
+        
+        # Load the CA certificate
+        ca_cert_pem = self.get_ca_certificate()
+        ca_cert = x509.load_pem_x509_certificate(ca_cert_pem)
+        
+        # Verify the contact's signed certificate
+        try:
+            ca_cert.public_key().verify(
+                self.contact_signed_cert.signature,
+                self.contact_signed_cert.tbs_certificate_bytes,
+                padding.PKCS1v15(),
+                self.contact_signed_cert.signature_hash_algorithm,
+            )            
+            print("[INFO] Contact's certificate verified.")
+        except Exception as e:
+            print(f"[ERROR] Could not verify contact's certificate: {e}")
+            return False
+        
+        return True   
+    
     def wait_for_connection(self):
         print("[INFO] Waiting for connection...")
         server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -191,43 +216,43 @@ class Entity:
                 try:
                     conn, addr = server_socket.accept()
                     print(f"[INFO] Connection established with {addr}")
-                    try:
-                        if self.authenticate_with_contact(conn):
-                            print("[INFO] Connection authenticated.")
-                            print("[INFO] This entity will create the session key.")
-                            self.session_key = os.urandom(32)
-                            encrypted_sk = pk_encryption.cipher_with_public_key(self.session_key, self.contact_signed_cert.public_key())
-                            conn.send(encrypted_sk)
-                            print("[INFO] Session key created.")
-                                
-                            while True:
-                                try:
-                                    message = conn.recv(4096)
-                                    # if not message:
-                                    #     print("[INFO] The client has closed the connection.")
-                                    #     break
-                                    
-                                    decrypted_message = sk_encryption.do_aes(message, 'CBC', self.session_key, iv=os.urandom(16))
-                                    print(f"Message: {decrypted_message.decode('utf-8')}")
-                                    
-                                    response = input("Enter the response to send (or type 'exit' to close the connection): ")
-                                    if response.lower() == 'exit':
-                                        print("[INFO] Closing connection.")
-                                        break
-                                    
-                                    encrypted_response = sk_encryption.do_aes(response.encode('utf-8'), 'CBC', self.session_key, iv=os.urandom(16))
-                                    conn.send(encrypted_response)
-                                    print("[INFO] Response sent.")
-                                except Exception as e:
-                                    print(f"[ERROR] Error during communication: {e}")
+                    contact_signed_cert_pem = conn.recv(4096)
+                    if self.authenticate_with_contact_receiver(conn, contact_signed_cert_pem):
+                        print("[INFO] Connection authenticated.")
+                        print("[INFO] This entity will create the session key.")
+                        self.session_key = os.urandom(32)
+                        encrypted_sk = pk_encryption.cipher_with_public_key(self.session_key, self.contact_signed_cert.public_key())
+                        conn.send(encrypted_sk)
+                        print("[INFO] Session key created and sent.")
+                        
+                        while True:
+                            try:
+                                response = conn.recv(4096)
+                                if not response:
+                                    print("[INFO] The client has closed the connection.")
                                     break
-                        else:
-                            print("[ERROR] Could not authenticate with contact. Exiting connection.")
-                            self.menu()
-                    except Exception as e:
-                        print(f"[ERROR] Error during authentication or session key exchange: {e}")
-                    finally:
-                        conn.close()
+                                decrypted_response = sk_encryption.decrypt_with_sk(response, 'CBC', self.session_key, iv=os.urandom(16), nonce=os.urandom(16))
+                                if decrypted_response == b'exit':
+                                    print("[INFO] The client has closed the connection.")
+                                    break
+                                print(f"Response: {decrypted_response.decode('utf-8')}")
+                                
+                                message = input("Enter the message to send (or type 'exit' to close the connection): ")
+                                if message.lower() == 'exit':
+                                    print("[INFO] Closing connection.")
+                                    break
+                                
+                                encrypted_message = sk_encryption.encrypt_with_sk(message.encode('utf-8'), 'CBC', self.session_key, iv=os.urandom(16), nonce=os.urandom(16))
+                                conn.send(encrypted_message)
+                                print("[INFO] Message sent.")
+                            except Exception as e:
+                                print(f"[ERROR] Error during communication: {e}")
+                                
+                        self.menu()
+                    else:
+                        print("[ERROR] Could not authenticate with contact. Exiting connection.")
+                        self.menu()
+                
                 except KeyboardInterrupt:
                     print("[INFO] Shutting down the server.")
                     break
@@ -235,7 +260,9 @@ class Entity:
                     print(f"[ERROR] Error accepting connection: {e}")
         finally:
             server_socket.close()
-        
+            self.session_key = None
+            print("[INFO] Connection closed.")
+            self.menu()
         
     def menu(self):
         print("1. Request certificates")
@@ -243,6 +270,10 @@ class Entity:
         print("3. Exit")
         if self.private_key is not None and self.public_key is not None and self.signed_certificate is not None and self.ca_certificate is not None and self.port is not None:
             print(f"Entity available on port: {self.port} \nWith ID: {self.ID}")
+        if self.private_key is not None and self.public_key is not None and self.signed_certificate is not None and self.ca_certificate is not None:
+            print("Certificates and keys already exist.")
+        else:
+            print("No keys or certificates obtained yet.")
         
         option = input("Choose an option: ")
         if option == "1":
@@ -272,7 +303,7 @@ class Entity:
                             self.menu()
         elif option == "2":
             print("1. Connect to contact")
-            print("2. Wait for connection")
+            print("2. Wait for contact connection")
             print("3. Back")
             print(f"Entity available on port: {self.port} \nWith ID: {self.ID}")
 
@@ -298,70 +329,74 @@ class Entity:
             if contact['name'] == name:
                 return True
         return False
-    
-    def do_encrypt_with_sk(self, message):
-        self.session_key = os.urandom(32)
-        nonce = os.urandom(16)
-        sk_encryption.do_aes(message, 'CBC', self.session_key, nonce)
-
-            
+          
     def connect_and_send_message(self):
-        port_number = None
-        while True:
-            print("Enter the port of the entity you want to connect to: ")
-            port = input("Port: ")
-            if port.isdigit():
-                port_number = int(port)
-            else:
-                print("[ERROR] Invalid port number. Restating...")
-                continue # Restarts the loop
-                                
-            try:
-                self.socket.connect(("localhost", port_number))
-                self.contacts.append({
-                    "port": port_number
-                })
-                break
-            except Exception as e:
-                print(f"[ERROR] Could not connect to at localhost:{port_number}: {e}")
-                continue  # Restart the loop to ask for IP and port again
+        port = None
+        while port is None or not port.isdigit():
+            port = input("Enter the port of the entity you want to connect to: ")
+            port_number = int(port)
+        
         try:
-            if self.authenticate_with_contact(self.socket):
-                print("[INFO] Connection established and authenticated.")
-                print("[INFO] Waiting for the server entity to create the session key.")
-                encrypted_sk = self.socket.recv(4096)
-                self.session_key = pk_encryption.decipher_with_private_key(self.private_key, encrypted_sk)
-                print("[INFO] Session key received.")
-
+            self.socket.connect(("localhost", port_number))   
+            self.contacts.append({   
+                "port": port
+            })
+        except Exception as e:
+            print(f"[ERROR] Could not connect to localhost:{port_number}: {e} \nRestarting...")
+            self.connect_and_send_message()
+        
+        if self.authenticate_with_contact_sender(self.socket):
+            print("[INFO] Connection established and authenticated.")
+            print("[INFO] Waiting for the server entity to create the session key.")
+            encrypted_sk = self.socket.recv(4096)
+            self.session_key = pk_encryption.decipher_with_private_key(self.private_key, encrypted_sk)
+            print("[INFO] Session key received.")
+            
             while True:
-                message = input("Enter the message to send (or type 'exit' to close the connection): ")
-                if message.lower() == 'exit':
+                try:
+                    message = input("Enter the message to send (or type 'exit' to close the connection): ")
+                    
+                    if message.lower() == 'exit':
+                        print("[INFO] Closing connection, after sending the last message.")
+                        encrypted_message = sk_encryption.encrypt_with_sk(message.encode('utf-8'), 'CBC', self.session_key, iv=os.urandom(16), nonce=os.urandom(16))
+                        self.socket.send(encrypted_message)
+                        print("[INFO] Message sent.")
+                        break
+                    
+                    
+                    encrypted_message = sk_encryption.encrypt_with_sk(message.encode('utf-8'), 'CBC', self.session_key, iv=os.urandom(16), nonce=os.urandom(16))
+                    self.socket.send(encrypted_message)
+                    
+                    response = self.socket.recv(4096)
+                    if not response:
+                        print("[INFO] The server has closed the connection.")
+                        break                    
+                    
+                    decrypted_response = sk_encryption.decrypt_with_sk(response, 'CBC', self.session_key, iv=os.urandom(16), nonce=os.urandom(16))
+                    print(f"Response: {decrypted_response.decode('utf-8')}")
+                    
+                    if decrypted_response == b'exit':
+                        print("[INFO] The server has closed the connection.")
+                        break
+                except KeyboardInterrupt:
                     print("[INFO] Closing connection.")
                     break
-
-                encrypted_message = sk_encryption.do_aes(message.encode('utf-8'), 'CBC', self.session_key, iv=os.urandom(16))
-                self.socket.send(encrypted_message)
-                print("[INFO] Message sent")
-
-                response = self.socket.recv(4096)
-                if not response:
-                    print("[INFO] The server has closed the connection.")
+                except Exception as e:
+                    print(f"[ERROR] An error occurred: {e}")
                     break
-
-                decrypted_response = sk_encryption.do_aes(response, 'CBC', self.session_key, iv=os.urandom(16))
-                print(f"Response: {decrypted_response.decode('utf-8')}")
-            else:
-                print("[ERROR] Could not authenticate with contact. Exiting connection.")
-                self.menu()
                 
-        except Exception as e:
-            print(f"[ERROR] An error occurred: {e}")
-        finally:
-            self.socket.close()
-            self.session_key = None
-            print("[INFO] Connection closed.")
-          
+        else:
+            print("[ERROR] Could not authenticate with contact. Exiting connection.")
+            self.menu()
 
+        self.socket.close()
+        self.session_key = None
+        print("[INFO] Connection closed.")
+        self.menu()
+        
+        
+        
+          
 if __name__ == "__main__":
     entity = Entity(9992)
     entity.menu()
