@@ -5,16 +5,19 @@ from cryptography import x509
 from cryptography.x509.oid import NameOID
 from datetime import datetime, timezone, timedelta
 import json
+import threading
 
 class Gateway:
     def __init__(self, HOST, PORT):
         self.HOST = HOST
         self.PORT = PORT
         self.public_key = None
+        self.password = None
+        self.assigned_certificates = 0
         
     def generate_keys(self):
         # Generate RSA keys
-        input_password = input("Enter the password to protect the private key: ")
+        self.password = input("Enter the password to protect the private key: ")
         print("[INFO] Creating key pair")
         private_key = rsa.generate_private_key(
             public_exponent=65537,
@@ -24,10 +27,10 @@ class Gateway:
         print("[INFO] RSA keys generated.")
         
         # Store the private key by encrypting it with a password
-        with open("keys/gateway_key.pem", "wb") as f:
+        with open("certificate_authority/gateway_key.pem", "wb") as f:
             f.write(private_key.private_bytes(encoding=serialization.Encoding.PEM,
                                   format=serialization.PrivateFormat.TraditionalOpenSSL,
-                                  encryption_algorithm=serialization.BestAvailableEncryption(input_password.encode('ascii')),))
+                                  encryption_algorithm=serialization.BestAvailableEncryption(self.password.encode('ascii')),))
 
         print("[INFO] RSA keys generated and stored the private key encrypted")
         if private_key is None or self.public_key is None:
@@ -36,30 +39,21 @@ class Gateway:
         return True
     
     def read_crt(self):
-        with open("root_certs/root_certificate.pem", "rb") as f:
+        with open("certificate_authority/root_certificate.pem", "rb") as f:
             cert = f.read()
         return cert
     
     def read_prvkey(self):
-        while True:
-            input_password = input("Enter the password to access the private key: ")
-            try:
-                with open("keys/gateway_key.pem", "rb") as f:
-                    self.private_key = serialization.load_pem_private_key(f.read(), password=input_password.encode('ascii'))
-                if self.private_key:
-                    print("[INFO] Private key loaded successfully.")
-                    return self.private_key
-            except ValueError:
-                print("[ERROR] Incorrect password.")
-            except Exception as e:
-                print(f"[ERROR] Could not load private key: {e}")
-                return False
-
-            retry_option = input("Do you want to try again (t) or regenerate the private keys (r)? (t/r): ").lower()
-            if retry_option == 'r':
-                self.create_key_pair()
+        try:
+            with open("certificate_authority/gateway_key.pem", "rb") as f:
+                self.private_key = serialization.load_pem_private_key(f.read(), password=self.password.encode('ascii'))
+            if self.private_key:
+                print("[INFO] Private key loaded successfully.")
                 return self.private_key
-            
+        except Exception as e:
+            print(f"[ERROR] Could not load private key: {e}, restarting CA...")
+            main()
+ 
             
     def create_self_signed_certificate(self, privkey):
         print("Creating a self-signed certificate...")
@@ -108,7 +102,7 @@ class Gateway:
         # write certificate to disk
         print("[INFO] Self Signed Certificate created now storing it")
         
-        with open("root_certs/root_certificate.pem", "wb") as f:
+        with open("certificate_authority/root_certificate.pem", "wb") as f:
             f.write(certificate.public_bytes(serialization.Encoding.PEM))
         print("[INFO] Self Signed Certificate stored")
         
@@ -123,7 +117,7 @@ class Gateway:
         x509_csr = x509.load_pem_x509_csr(csr)
         if x509_csr.is_signature_valid:
             print("CSR signature is valid!!!")
-            with open("csr/user_csr.pem", "wb") as f:
+            with open(f"certificate_authority/user_csrs/user_csr_{self.assigned_certificates}.pem", "wb") as f:
                 f.write(x509_csr.public_bytes(serialization.Encoding.PEM))
         else:
             print("CSR signature is invalid!!!")
@@ -193,14 +187,31 @@ class Gateway:
         print("[INFO] Certificate created and signed")
         
         print("[INFO] Storing the certificate")
-        with open("root_certs/user_cert.pem", "wb") as f:
+        with open(f"certificate_authority/user_certs/user_cert_{self.assigned_certificates}.pem", "wb") as f:
             f.write(user_cert.public_bytes(serialization.Encoding.PEM))
             # f.write("\n\n")
+        self.assigned_certificates += 1
         print("[INFO] Certificate stored")
         
         return user_cert
     
-                    
+    def handle_client(self, client_socket):
+        try:
+            csr = client_socket.recv(4096)
+            ca_cert_pem = self.read_crt().decode('utf-8')
+            signed_cert_pem = self.load_csr_and_issue_certificate(csr, self.read_crt(), self.read_prvkey()).public_bytes(serialization.Encoding.PEM).decode('utf-8')    
+            response = json.dumps({
+                'signed_cert_pem': signed_cert_pem,
+                'ca_cert_pem': ca_cert_pem
+            })
+            client_socket.send(response.encode('utf-8'))
+            print("Certificado enviado para o cliente  ")
+        except Exception as e:
+            print(f"[ERROR] Error handling client: {e}")
+        finally:
+            client_socket.close()
+            
+            
 def main():
     # Inicializar a entidade Gateway
     HOST = "localhost"
@@ -217,41 +228,33 @@ def main():
         if gateway.create_self_signed_certificate(privkey):
             print("[INFO] Self Signed Certificate created, CA initialized")
     else:
-        print("[ERROR] Could not generate keys. Exiting...")
-        return
+        print("[ERROR] Could not generate keys. r...")
+        choice = input("Would you like to try again (y) or exit (e)? (y/e): ")
+        if choice == "y":
+            main()
+        else:
+            return
     
     # Configurar o socket do Gateway
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.bind((HOST, PORT_NUMBER))
     server.listen(5)
-    server.settimeout(1.0)  # Timeout de 1 segundo para evitar bloqueio
-
+    
     print("[*] Gateway listening on port 9991...")
 
     try:
         while True:
             try:
-                # Aceitar conexões (com timeout)
+                # Accept connections (blocking call)
                 client_socket, client_address = server.accept()
-                print(f"Conexão recebida de {client_address}")
-                                
-                csr = client_socket.recv(4096)
-                ca_cert_pem = gateway.read_crt().decode('utf-8')
-                signed_cert_pem = gateway.load_csr_and_issue_certificate(csr, gateway.read_crt(), privkey).public_bytes(serialization.Encoding.PEM).decode('utf-8')    
-                response = json.dumps({
-                    'signed_cert_pem': signed_cert_pem,
-                    'ca_cert_pem': ca_cert_pem
-                })
-                client_socket.send(response.encode('utf-8'))
-                print("Certificado enviado para o cliente  ")
-                client_socket.close()
+                print(f"Conexction recerived from: {client_address}")
+                client_handler = threading.Thread(target=gateway.handle_client, args=(client_socket,))
+                client_handler.start()
             except socket.timeout:
-                # Continuar o loop quando o timeout ocorre
                 pass
-            
     except KeyboardInterrupt:
-        # Fechar o servidor ao pressionar Ctrl+C
-        print("\nParando o servidor...")
+        print("[INFO] Shutting down the gateway.")
+    finally:
         server.close()
 
 if __name__ == "__main__":

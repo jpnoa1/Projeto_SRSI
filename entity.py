@@ -2,24 +2,31 @@ from cryptography.hazmat.primitives import serialization
 from cryptography import x509
 from cryptography.x509.oid import NameOID
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.asymmetric import rsa, padding
 import socket
 import json
+import random
+from utils import sk_encryption, pk_encryption
+import os
 
 class Entity:
-    def __init__(self):
+    def __init__(self, PORT):
         self.private_key = None
-        self.file_name = None
         self.public_key = None
         self.signed_certificate = None
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.ca_certificate = None
-        # self.contacts = []
-
+        self.ID = random.randint(1000, 9999)
+        self.password = None
+        self.contacts = []
+        self.session_key = None
+        self.contact_signed_cert = None
+        self.port = PORT
+        
 
     def create_key_pair(self):
         # Generate RSA keys
-        input_password = input("Enter the password to protect the private key: ")
+        self.password = input("Enter the password to protect the private key: ")
         print("[INFO] Creating a key pair...")
         self.private_key = rsa.generate_private_key(public_exponent=65537,
                                                     key_size=2048)
@@ -32,28 +39,25 @@ class Entity:
         print("[INFO] RSA keys generated.")
 
         # Store the private key by encrypting it with a password
-        self.file_name = input("Enter the filename to store the private key: ")
-        with open(f"keys/{self.file_name}.pem", "wb") as f:
+        with open(f"users/users_privkeys/private_key_{self.ID}.pem", "wb") as f:
             f.write(self.private_key.private_bytes(encoding=serialization.Encoding.PEM,
                                                    format=serialization.PrivateFormat.TraditionalOpenSSL,
-                                                   encryption_algorithm=serialization.BestAvailableEncryption(input_password.encode('ascii')),))
+                                                   encryption_algorithm=serialization.BestAvailableEncryption(self.password.encode('ascii')),))
         
         print("[INFO] RSA keys generated and private key stored.")
         return True
     
-    def read_crt(self):
-        with open(self.file_name, "rb") as f:
+    def read_privkey(self):
+        with open(f"users/users_privkeys/private_key_{self.ID}.pem", "rb") as f:
             cert = f.read()
         return cert
 
     def request_certificates(self):
         # Verify and load the private key
-        input_password = input("Enter the password to access the private key: ")
         try:
-            
             print("[INFO] Loading private key...")
-            with open(self.file_name, "rb") as f:
-                self.private_key = serialization.load_pem_private_key(f.read(), password=input_password.encode('ascii'))
+            with open(f"users/users_privkeys/private_key_{self.ID}.pem", "rb") as f:
+                self.private_key = serialization.load_pem_private_key(f.read(), password=self.password.encode('ascii'))
             print("[INFO] Private key loaded.")
             
         except Exception as e:
@@ -71,18 +75,19 @@ class Entity:
         return self.signed_certificate, self.ca_certificate
     
     def connect_to_CA(self):
-        HOST = "localhost"
         PORT = input("Enter the port to connect to ca: ")
         while not PORT.isdigit():
             print("[ERROR] Invalid port number. Try again.")
         PORT = int(PORT)
         self.socket.connect(("localhost", PORT))
         print("[INFO] Connected to CA.")
+        self.port = self.socket.getsockname()[1]
         
     def create_CSR(self):
         print("To create the CSR (Certificate Signing Request) we need to collect some data. Please enter it bellow:")
         while True:
             country_name = input("Country Code (MUST BE EXACTLY 2 CHARACTERS): ")
+            common_name = input("Common Name: ")
             if len(country_name) == 2:
                 break
             print("[ERROR] Country Code must be exactly 2 characters. Please try again.")
@@ -126,13 +131,14 @@ class Entity:
             signed_cert_pem = response['signed_cert_pem'].encode('utf-8')
             ca_cert_pem = response['ca_cert_pem'].encode('utf-8')
             
-            print(signed_cert_pem.decode('utf-8'))
-            print("\n")
-            print(ca_cert_pem.decode('utf-8'))
-            
             signed_cert = x509.load_pem_x509_certificate(signed_cert_pem)
             ca_certificate = x509.load_pem_x509_certificate(ca_cert_pem)
+            
             print("[INFO] Signed certificate and CA certificate received from CA.")
+            with open(f"users/users_certs/signed_cert_{self.ID}.pem", "wb") as f:
+                f.write(signed_cert_pem)
+            with open(f"users/ca_cert_to_user/ca_cert_{self.ID}.pem", "wb") as f:
+                f.write(ca_cert_pem)
             return signed_cert, ca_certificate            
         except json.JSONDecodeError as e:
             print(f"[ERROR] JSON decode error: {e}")
@@ -142,13 +148,105 @@ class Entity:
             print(f"[ERROR] Invalid certificate format: {e}")
         return None, None
     
+    def get_ca_certificate(self):
+        with open(f"users/ca_cert_to_user/ca_cert_{self.ID}.pem", "rb") as f:
+            cert = f.read()
+        return cert
+    
+    def authenticate_with_contact(self, contact_socket):
+        # Send the signed certificate to the contact
+        contact_socket.send(self.signed_certificate.public_bytes(serialization.Encoding.PEM))
+        
+        # Receive the contact's signed certificate
+        contact_signed_cert_pem = contact_socket.recv(4096)
+        self.contact_signed_cert = x509.load_pem_x509_certificate(contact_signed_cert_pem)
+        
+        # Load the CA certificate
+        ca_cert_pem = self.get_ca_certificate()
+        ca_cert = x509.load_pem_x509_certificate(ca_cert_pem)
+        
+        # Verify the contact's signed certificate
+        try:
+            ca_cert.public_key().verify(
+                self.contact_signed_cert.signature,
+                self.contact_signed_cert.tbs_certificate_bytes,
+                padding.PKCS1v15(),
+                self.contact_signed_cert.signature_hash_algorithm,
+            )            
+            print("[INFO] Contact's certificate verified.")
+        except Exception as e:
+            print(f"[ERROR] Could not verify contact's certificate: {e}")
+            return False
+        
+        return True
+    
+    def wait_for_connection(self):
+        print("[INFO] Waiting for connection...")
+        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_socket.bind(("localhost", self.port))
+        server_socket.listen(5)
+        
+        try:
+            while True:
+                try:
+                    conn, addr = server_socket.accept()
+                    print(f"[INFO] Connection established with {addr}")
+                    try:
+                        if self.authenticate_with_contact(conn):
+                            print("[INFO] Connection authenticated.")
+                            print("[INFO] This entity will create the session key.")
+                            self.session_key = os.urandom(32)
+                            encrypted_sk = pk_encryption.cipher_with_public_key(self.session_key, self.contact_signed_cert.public_key())
+                            conn.send(encrypted_sk)
+                            print("[INFO] Session key created.")
+                                
+                            while True:
+                                try:
+                                    message = conn.recv(4096)
+                                    # if not message:
+                                    #     print("[INFO] The client has closed the connection.")
+                                    #     break
+                                    
+                                    decrypted_message = sk_encryption.do_aes(message, 'CBC', self.session_key, iv=os.urandom(16))
+                                    print(f"Message: {decrypted_message.decode('utf-8')}")
+                                    
+                                    response = input("Enter the response to send (or type 'exit' to close the connection): ")
+                                    if response.lower() == 'exit':
+                                        print("[INFO] Closing connection.")
+                                        break
+                                    
+                                    encrypted_response = sk_encryption.do_aes(response.encode('utf-8'), 'CBC', self.session_key, iv=os.urandom(16))
+                                    conn.send(encrypted_response)
+                                    print("[INFO] Response sent.")
+                                except Exception as e:
+                                    print(f"[ERROR] Error during communication: {e}")
+                                    break
+                        else:
+                            print("[ERROR] Could not authenticate with contact. Exiting connection.")
+                            self.menu()
+                    except Exception as e:
+                        print(f"[ERROR] Error during authentication or session key exchange: {e}")
+                    finally:
+                        conn.close()
+                except KeyboardInterrupt:
+                    print("[INFO] Shutting down the server.")
+                    break
+                except Exception as e:
+                    print(f"[ERROR] Error accepting connection: {e}")
+        finally:
+            server_socket.close()
+        
+        
     def menu(self):
         print("1. Request certificates")
         print("2. Connect and send message to another entity")
         print("3. Exit")
+        if self.private_key is not None and self.public_key is not None and self.signed_certificate is not None and self.ca_certificate is not None and self.port is not None:
+            print(f"Entity available on port: {self.port} \nWith ID: {self.ID}")
+        
         option = input("Choose an option: ")
         if option == "1":
-            if self.private_key is None or self.public_key is None or self.file_name is None or self.signed_certificate is None or self.ca_certificate is None:
+            if self.private_key is None or self.public_key is None or self.signed_certificate is None or self.ca_certificate is None:
                 if entity.create_key_pair():
                     print("[INFO] Key pair created, now preparing to request certificates...")
                     if entity.request_certificates() is None:
@@ -156,6 +254,8 @@ class Entity:
                         exit(1)
                     else:
                         print("[INFO] Certificates received successfully.")
+                        self.socket.close()
+                        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                         self.menu()
             else:
                 option2 = input("Keys and certificates alreay exists, do you want to overwrite them? (y/n): ")
@@ -167,60 +267,103 @@ class Entity:
                             exit(1)
                         else:
                             print("[INFO] Certificates received successfully.")
+                            self.socket.close()
+                            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                             self.menu()
         elif option == "2":
-            if self.private_key is None or self.public_key is None or self.file_name is None or self.signed_certificate is None or self.ca_certificate is None:
+            print("1. Connect to contact")
+            print("2. Wait for connection")
+            print("3. Back")
+            print(f"Entity available on port: {self.port} \nWith ID: {self.ID}")
+
+            option = input("Choose an option: ")
+            if self.private_key is None or self.public_key is None or self.signed_certificate is None or self.ca_certificate is None:
                 print("[ERROR] Keys and certificates do not exist. Please request certificates first.")
                 self.menu()
-            else:
+            elif option == "1":
                 self.connect_and_send_message()
+            elif option == "2":
+                self.wait_for_connection()
+            else:
+                self.menu()
         elif option == "3":
             exit(0)
         else:
             print("Invalid option. Try again.")
             self.menu()
             
+            
+    def contact_exists(self, name):
+        for contact in self.contacts:
+            if contact['name'] == name:
+                return True
+        return False
+    
+    def do_encrypt_with_sk(self, message):
+        self.session_key = os.urandom(32)
+        nonce = os.urandom(16)
+        sk_encryption.do_aes(message, 'CBC', self.session_key, nonce)
+
+            
     def connect_and_send_message(self):
-        print("Enter the IP address of the entity you want to connect to: ")
-        ip = input("IP: ")
-        print("Enter the port of the entity you want to connect to: ")
-        port = input("Port: ")
-        print("Enter the name of the entity you want to connect to: ")
-        name = input("Name: ")
-        print("[INFO] Storing contact and connecting to entity...")
-        
-        print("[INFO] Connecting to entity...")
-        self.socket.connect((ip, port))
-        
-        # self.contacts.append({
-        #     "name": name,
-        #     "ip": ip,
-        #     "port": port
-        # })
-        
+        port_number = None
+        while True:
+            print("Enter the port of the entity you want to connect to: ")
+            port = input("Port: ")
+            if port.isdigit():
+                port_number = int(port)
+            else:
+                print("[ERROR] Invalid port number. Restating...")
+                continue # Restarts the loop
+                                
+            try:
+                self.socket.connect(("localhost", port_number))
+                self.contacts.append({
+                    "port": port_number
+                })
+                break
+            except Exception as e:
+                print(f"[ERROR] Could not connect to at localhost:{port_number}: {e}")
+                continue  # Restart the loop to ask for IP and port again
         try:
+            if self.authenticate_with_contact(self.socket):
+                print("[INFO] Connection established and authenticated.")
+                print("[INFO] Waiting for the server entity to create the session key.")
+                encrypted_sk = self.socket.recv(4096)
+                self.session_key = pk_encryption.decipher_with_private_key(self.private_key, encrypted_sk)
+                print("[INFO] Session key received.")
+
             while True:
-                message = input("Enter the message you want to send (or type 'exit' to close the connection): ")
+                message = input("Enter the message to send (or type 'exit' to close the connection): ")
                 if message.lower() == 'exit':
                     print("[INFO] Closing connection.")
                     break
 
-                self.socket.send(message.encode('utf-8'))
+                encrypted_message = sk_encryption.do_aes(message.encode('utf-8'), 'CBC', self.session_key, iv=os.urandom(16))
+                self.socket.send(encrypted_message)
+                print("[INFO] Message sent")
+
                 response = self.socket.recv(4096)
                 if not response:
                     print("[INFO] The server has closed the connection.")
                     break
 
-                print(f"Response: {response.decode('utf-8')}")
+                decrypted_response = sk_encryption.do_aes(response, 'CBC', self.session_key, iv=os.urandom(16))
+                print(f"Response: {decrypted_response.decode('utf-8')}")
+            else:
+                print("[ERROR] Could not authenticate with contact. Exiting connection.")
+                self.menu()
+                
         except Exception as e:
             print(f"[ERROR] An error occurred: {e}")
         finally:
             self.socket.close()
+            self.session_key = None
             print("[INFO] Connection closed.")
           
 
 if __name__ == "__main__":
-    entity = Entity()
+    entity = Entity(9992)
     entity.menu()
             
             
