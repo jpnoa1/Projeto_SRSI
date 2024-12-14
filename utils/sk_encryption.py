@@ -99,7 +99,7 @@ def encrypt_with_sk(message, mode, key, iv=None, nonce=None):
     encryptor = cipher.encryptor()
     print("[INFO] Encryption successful")
     ciphertext = encryptor.update(message) + encryptor.finalize()
-    return str(base64.b64encode(ciphertext))
+    return ciphertext
     
 def decrypt_with_sk(ciphertext, mode, key, iv=None, nonce=None):
     print("\nDecrypting with AES, 256-bit key, mode " + mode)
