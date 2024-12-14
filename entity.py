@@ -231,7 +231,7 @@ class Entity:
                                 if not response:
                                     print("[INFO] The client has closed the connection.")
                                     break
-                                decrypted_response = sk_encryption.decrypt_with_sk(response, 'CBC', self.session_key, iv=os.urandom(16), nonce=os.urandom(16))
+                                decrypted_response = sk_encryption.decrypt_with_sk(response, 'CBC', self.session_key)
                                 if decrypted_response == b'exit':
                                     print("[INFO] The client has closed the connection.")
                                     break
@@ -372,7 +372,7 @@ class Entity:
                         print("[INFO] The server has closed the connection.")
                         break                    
                     
-                    decrypted_response = sk_encryption.decrypt_with_sk(response, 'CBC', self.session_key, iv=os.urandom(16), nonce=os.urandom(16))
+                    decrypted_response = sk_encryption.decrypt_with_sk(response, 'CBC', self.session_key)
                     print(f"Response: {decrypted_response}")
                     
                     if decrypted_response == b'exit':
