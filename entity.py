@@ -86,8 +86,7 @@ class Entity:
     def create_CSR(self):
         print("To create the CSR (Certificate Signing Request) we need to collect some data. Please enter it bellow:")
         while True:
-            country_name = input("Country Code (MUST BE EXACTLY 2 CHARACTERS): ")
-            common_name = input("Common Name: ")
+            country_name = input("Common Name: ")
             if len(country_name) == 2:
                 break
             print("[ERROR] Country Code must be exactly 2 characters. Please try again.")

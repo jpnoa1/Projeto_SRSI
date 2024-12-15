@@ -240,7 +240,7 @@ def main():
     server.bind((HOST, PORT_NUMBER))
     server.listen(5)
     
-    print("[*] Gateway listening on port 9991...")
+    print(f"[*] Gateway listening on port ${PORT_NUMBER}...")
 
     try:
         while True:
@@ -252,6 +252,9 @@ def main():
                 client_handler.start()
             except socket.timeout:
                 pass
+            except KeyboardInterrupt:
+                print("[INFO] Shutting down the gateway.")
+                break
     except KeyboardInterrupt:
         print("[INFO] Shutting down the gateway.")
     finally:
