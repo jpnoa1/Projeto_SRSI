@@ -2,8 +2,8 @@ import base64
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-def encrypt_with_sk(message, mode, key, iv=None, nonce=None):
-    print("\nEncrypting with AES, 256-bit key, mode " + mode)
+def encrypt_with_sk(message, key, nonce=None):
+    print("\nEncrypting with AES, 256-bit key, mode CTR")
 
     print("Data:" + str(message))
 
@@ -26,15 +26,15 @@ def encrypt_with_sk(message, mode, key, iv=None, nonce=None):
     
     
     
-def decrypt_with_sk(encrypted_data, mode, key):
+def decrypt_with_sk(encrypted_data, key):
     nonce = encrypted_data[:16]
     ciphertext = encrypted_data[16:]
 
-    print("\nDecrypting with AES, 256-bit key, mode " + mode)
+    print("\nDecrypting with AES, 256-bit key, mode CTR")
     print("KEY = " + str(base64.b64encode(key)))
     cipher = Cipher(algorithms.AES(key), modes.CTR(nonce))
 
     decryptor = cipher.decryptor()
     plaintext = decryptor.update(ciphertext) + decryptor.finalize()
-    print("[INFO] Decryption successfull, \nPlaintext = " + str(plaintext.decode('utf-8')))
+    print("[INFO] Decryption successfull")
     return str(plaintext.decode('utf-8'))

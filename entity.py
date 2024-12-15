@@ -86,7 +86,7 @@ class Entity:
     def create_CSR(self):
         print("To create the CSR (Certificate Signing Request) we need to collect some data. Please enter it bellow:")
         while True:
-            country_name = input("Common Name: ")
+            country_name = input("Country Code (MUST BE EXACTLY 2 CHARACTERS): ")
             if len(country_name) == 2:
                 break
             print("[ERROR] Country Code must be exactly 2 characters. Please try again.")
@@ -230,7 +230,7 @@ class Entity:
                                 if not response:
                                     print("[INFO] The client has closed the connection.")
                                     break
-                                decrypted_response = sk_encryption.decrypt_with_sk(response, 'CBC', self.session_key)
+                                decrypted_response = sk_encryption.decrypt_with_sk(response, self.session_key)
                                 if decrypted_response == b'exit':
                                     print("[INFO] The client has closed the connection.")
                                     break
@@ -241,7 +241,7 @@ class Entity:
                                     print("[INFO] Closing connection.")
                                     break
                                 
-                                encrypted_message = sk_encryption.encrypt_with_sk(message.encode('utf-8'), 'CBC', self.session_key, iv=os.urandom(16), nonce=os.urandom(16))
+                                encrypted_message = sk_encryption.encrypt_with_sk(message.encode('utf-8'), self.session_key, nonce=os.urandom(16))
                                 conn.send(encrypted_message)
                                 print("[INFO] Message sent.")
                             except Exception as e:
@@ -357,13 +357,13 @@ class Entity:
                     
                     if message.lower() == 'exit':
                         print("[INFO] Closing connection, after sending the last message.")
-                        encrypted_message = sk_encryption.encrypt_with_sk(message.encode('utf-8'), 'CBC', self.session_key, iv=os.urandom(16), nonce=os.urandom(16))
+                        encrypted_message = sk_encryption.encrypt_with_sk(message.encode('utf-8'), self.session_key, nonce=os.urandom(16))
                         self.socket.send(encrypted_message)
                         print("[INFO] Message sent.")
                         break
                     
                     
-                    encrypted_message = sk_encryption.encrypt_with_sk(message.encode('utf-8'), 'CBC', self.session_key, iv=os.urandom(16), nonce=os.urandom(16))
+                    encrypted_message = sk_encryption.encrypt_with_sk(message.encode('utf-8'), self.session_key, nonce=os.urandom(16))
                     self.socket.send(encrypted_message)
                     
                     response = self.socket.recv(4096)
@@ -371,7 +371,7 @@ class Entity:
                         print("[INFO] The server has closed the connection.")
                         break                    
                     
-                    decrypted_response = sk_encryption.decrypt_with_sk(response, 'CBC', self.session_key)
+                    decrypted_response = sk_encryption.decrypt_with_sk(response, self.session_key)
                     print(f"Response: {decrypted_response}")
                     
                     if decrypted_response == b'exit':

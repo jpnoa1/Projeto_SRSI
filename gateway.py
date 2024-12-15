@@ -240,7 +240,7 @@ def main():
     server.bind((HOST, PORT_NUMBER))
     server.listen(5)
     
-    print(f"[*] Gateway listening on port ${PORT_NUMBER}...")
+    print(f"[*] Gateway listening on port {PORT_NUMBER}...")
 
     try:
         while True:
